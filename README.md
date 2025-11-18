@@ -1,0 +1,387 @@
+<!-- Chosen Palette: Calm Harmony (Stone neutrals with Indigo accent) -->
+<!-- Application Structure Plan: A task-oriented, two-column responsive dashboard. Left column (md:col-span-1) contains the primary user task: the booking form. Right column (md:col-span-2) displays the secondary task: viewing the current schedule. This structure is chosen for PC usability, placing the action form and the data view side-by-side, which is more efficient than the mobile-only LINE app. User flow: 1. User loads app, sees current schedule (fetched from- and listening to- Firestore). 2. User fills form to book a new meeting. 3. On submit, JS checks for time conflicts against the locally-stored schedule array. 4. If conflict, a message is shown. 5. If no conflict, data is written to Firestore. 6. The 'onSnapshot' listener automatically updates the schedule view, showing the new booking. -->
+<!-- Visualization & Content Choices: Report Info: Need to see meeting bookings. Goal: Display schedule. Viz/Method: A real-time updating list ('ul'). Interaction: List items show booking details and a 'Delete' button. Justification: A full calendar (like FullCalendar) is complex and not in the allowed libraries (Chart.js/Plotly are for charts, not schedulers). A simple, chronologically-sorted list is the clearest, most robust way to show bookings for a *single resource* and is easily implemented with vanilla JS and Firestore 'onSnapshot'. Report Info: Need to prevent conflicts. Goal: Validate new booking. Viz/Method: JS algorithm on form-submit. Interaction: A custom message 'div' displays success or specific conflict errors. Justification: This directly addresses the user's core requirement for conflict warnings, replacing inconvenient 'alert()' popups. Library/Method: Vanilla JS for logic, Firestore for data. -->
+<!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>線上會議室預約系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+        }
+        .message {
+            display: none;
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out;
+        }
+        .message.show {
+            display: block;
+            opacity: 1;
+        }
+    </style>
+</head>
+<body class="bg-stone-100 text-stone-800">
+
+    <div class="container max-w-6xl mx-auto p-4 md:p-8">
+        
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold text-indigo-700">線上會議室預約系統</h1>
+            <p class="text-stone-600 mt-2">目前全公司只有一間線上會議室。請在此登記您需要使用的時段。</p>
+            <div class="mt-4 text-sm text-gray-500">
+                <p>您的使用者 ID: <span id="user-id-display" class="font-mono">載入中...</span></p>
+            </div>
+        </header>
+
+        <main class="grid grid-cols-1 md:grid-cols-3 gap-8">
+
+            <aside class="md:col-span-1">
+                <div class="bg-white p-6 rounded-lg shadow-md sticky top-8">
+                    <h2 class="text-xl font-semibold text-stone-900 mb-4">預約新的會議</h2>
+                    <form id="booking-form" class="space-y-4">
+                        <div>
+                            <label for="meeting-title" class="block text-sm font-medium text-stone-700">會議主題</label>
+                            <input type="text" id="meeting-title" name="meeting-title" required class="mt-1 block w-full p-2 border border-stone-300 rounded-md shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <label for="booker-name" class="block text-sm font-medium text-stone-700">預約人</label>
+                            <input type="text" id="booker-name" name="booker-name" required class="mt-1 block w-full p-2 border border-stone-300 rounded-md shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <label for="meeting-date" class="block text-sm font-medium text-stone-700">日期</label>
+                            <input type="date" id="meeting-date" name="meeting-date" required class="mt-1 block w-full p-2 border border-stone-300 rounded-md shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <label for="start-time" class="block text-sm font-medium text-stone-700">開始時間</label>
+                            <input type="time" id="start-time" name="start-time" step="900" required class="mt-1 block w-full p-2 border border-stone-300 rounded-md shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <label for="end-time" class="block text-sm font-medium text-stone-700">結束時間</label>
+                            <input type="time" id="end-time" name="end-time" step="900" required class="mt-1 block w-full p-2 border border-stone-300 rounded-md shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+
+                        <div id="message-area" class="message p-4 rounded-md text-sm"></div>
+
+                        <button type="submit" id="submit-button" class="w-full bg-indigo-600 text-white p-3 rounded-md font-semibold hover:bg-indigo-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-stone-400">
+                            提交預約
+                        </button>
+                    </form>
+                </div>
+            </aside>
+
+            <section class="md:col-span-2">
+                <div class="bg-white p-6 rounded-lg shadow-md">
+                    <h2 class="text-xl font-semibold text-stone-900 mb-4">目前已預約時段</h2>
+                    <div id="schedule-loading" class="text-stone-500">
+                        <svg class="animate-spin h-5 w-5 mr-3 inline-block" viewBox="0 0 24 24">
+                          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        正在從伺服器載入預約資料...
+                    </div>
+                    <ul id="schedule-list" class="space-y-4">
+                    </ul>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            addDoc, 
+            deleteDoc, 
+            onSnapshot, 
+            collection, 
+            Timestamp,
+            setLogLevel
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+  apiKey: "AIzaSyCBpHXdtMKiJ_qwwTReqmMJ6KHNdMKat2E",
+  authDomain: "cj-cisco-meeting-reservation.firebaseapp.com",
+  projectId: "cj-cisco-meeting-reservation",
+  storageBucket: "cj-cisco-meeting-reservation.firebasestorage.app",
+  messagingSenderId: "57951880212",
+  appId: "1:57951880212:web:46af248d9ccc4d906b5301"
+};
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-meeting-room';
+
+        let app, auth, db;
+        let currentUserId = null;
+        let allBookings = [];
+        let meetingsCollectionRef;
+
+        const form = document.getElementById('booking-form');
+        const submitButton = document.getElementById('submit-button');
+        const messageArea = document.getElementById('message-area');
+        const scheduleList = document.getElementById('schedule-list');
+        const scheduleLoading = document.getElementById('schedule-loading');
+        const userIdDisplay = document.getElementById('user-id-display');
+        const dateInput = document.getElementById('meeting-date');
+
+        function showMessage(message, type = 'error') {
+            messageArea.textContent = message;
+            messageArea.classList.remove('bg-red-100', 'text-red-700', 'bg-green-100', 'text-green-700');
+            
+            if (type === 'error') {
+                messageArea.classList.add('bg-red-100', 'text-red-700');
+            } else {
+                messageArea.classList.add('bg-green-100', 'text-green-700');
+            }
+            
+            messageArea.classList.add('show');
+            
+            setTimeout(() => {
+                messageArea.classList.remove('show');
+            }, 5000);
+        }
+
+        function formatDateTime(date) {
+            return date.toLocaleString('zh-TW', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            });
+        }
+        
+        function formatTime(date) {
+             return date.toLocaleTimeString('zh-TW', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            });
+        }
+
+        function renderSchedule(bookings) {
+            scheduleList.innerHTML = '';
+            if (bookings.length === 0) {
+                scheduleList.innerHTML = '<li class="text-stone-500">目前沒有任何預約。</li>';
+                return;
+            }
+
+            bookings.forEach(booking => {
+                const li = document.createElement('li');
+                li.className = 'p-4 bg-stone-50 rounded-lg border border-stone-200 flex flex-col sm:flex-row sm:justify-between sm:items-center';
+                
+                const details = document.createElement('div');
+                details.className = 'mb-2 sm:mb-0';
+                
+                const time = document.createElement('div');
+                time.className = 'font-semibold text-indigo-700';
+                time.textContent = `${formatDateTime(booking.start)} - ${formatTime(booking.end)}`;
+                
+                const title = document.createElement('div');
+                title.className = 'text-stone-900 text-lg';
+                title.textContent = booking.title;
+                
+                const booker = document.createElement('div');
+                booker.className = 'text-sm text-stone-500';
+                booker.textContent = `預約人：${booking.booker}`;
+                
+                details.appendChild(time);
+                details.appendChild(title);
+                details.appendChild(booker);
+                
+                li.appendChild(details);
+                
+                if (booking.bookerId === currentUserId) {
+                    const deleteButton = document.createElement('button');
+                    deleteButton.textContent = '刪除';
+                    deleteButton.className = 'bg-red-100 text-red-700 px-3 py-1 rounded-md text-sm font-medium hover:bg-red-200 transition-colors self-start sm:self-center';
+                    deleteButton.onclick = () => deleteBooking(booking.id);
+                    li.appendChild(deleteButton);
+                }
+                
+                scheduleList.appendChild(li);
+            });
+        }
+
+        async function deleteBooking(id) {
+            if (!db) return;
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'meetings', id);
+                await deleteDoc(docRef);
+                showMessage('預約已刪除。', 'success');
+            } catch (e) {
+                console.error("Error deleting document: ", e);
+                showMessage('刪除失敗，請重試。');
+            }
+        }
+
+        function loadSchedule() {
+            if (!db) return;
+            scheduleLoading.style.display = 'block';
+            
+            meetingsCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'meetings');
+            
+            onSnapshot(meetingsCollectionRef, (snapshot) => {
+                scheduleLoading.style.display = 'none';
+                let bookings = [];
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    bookings.push({
+                        id: doc.id,
+                        ...data,
+                        start: data.start.toDate(),
+                        end: data.end.toDate()
+                    });
+                });
+                
+                bookings.sort((a, b) => a.start - b.start);
+                
+                allBookings = bookings;
+                renderSchedule(allBookings);
+                
+            }, (error) => {
+                console.error("Error fetching schedule: ", error);
+                scheduleLoading.textContent = '載入預約失敗。請重新整理頁面。';
+                scheduleLoading.classList.add('text-red-600');
+            });
+        }
+
+        async function handleBookingSubmit(event) {
+            event.preventDefault();
+            if (!db || !currentUserId) {
+                showMessage('資料庫尚未連接，請稍後再試。');
+                return;
+            }
+
+            submitButton.disabled = true;
+            submitButton.textContent = '檢查中...';
+
+            const title = form['meeting-title'].value;
+            const booker = form['booker-name'].value;
+            const date = form['meeting-date'].value;
+            const startTime = form['start-time'].value;
+            const endTime = form['end-time'].value;
+
+            if (!title || !booker || !date || !startTime || !endTime) {
+                showMessage('所有欄位皆為必填。');
+                submitButton.disabled = false;
+                submitButton.textContent = '提交預約';
+                return;
+            }
+
+            const startDateTime = new Date(`${date}T${startTime}`);
+            const endDateTime = new Date(`${date}T${endTime}`);
+
+            if (endDateTime <= startDateTime) {
+                showMessage('結束時間必須晚於開始時間。');
+                submitButton.disabled = false;
+                submitButton.textContent = '提交預約';
+                return;
+            }
+
+            let isConflict = false;
+            let conflictingMeeting = null;
+            
+            for (const booking of allBookings) {
+                const existingStart = booking.start;
+                const existingEnd = booking.end;
+                
+                const overlap = (startDateTime < existingEnd) && (endDateTime > existingStart);
+                
+                if (overlap) {
+                    isConflict = true;
+                    conflictingMeeting = booking;
+                    break;
+                }
+            }
+
+            if (isConflict) {
+                showMessage(`時間衝突！與「${conflictingMeeting.title}」(${formatTime(conflictingMeeting.start)}-${formatTime(conflictingMeeting.end)}) 的時段重疊。`);
+                submitButton.disabled = false;
+                submitButton.textContent = '提交預約';
+                return;
+            }
+
+            try {
+                submitButton.textContent = '提交中...';
+                await addDoc(meetingsCollectionRef, {
+                    title: title,
+                    booker: booker,
+                    start: Timestamp.fromDate(startDateTime),
+                    end: Timestamp.fromDate(endDateTime),
+                    bookerId: currentUserId
+                });
+                
+                showMessage('預約成功！', 'success');
+                form.reset();
+                setDefaultDate();
+                
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                showMessage('預約失敗，請重試。');
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = '提交預約';
+            }
+        }
+        
+        function setDefaultDate() {
+            const today = new Date();
+            const yyyy = today.getFullYear();
+            const mm = String(today.getMonth() + 1).padStart(2, '0');
+            const dd = String(today.getDate()).padStart(2, '0');
+            dateInput.value = `${yyyy}-${mm}-${dd}`;
+            dateInput.min = `${yyyy}-${mm}-${dd}`;
+        }
+
+        async function initializeFirebase() {
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                setLogLevel('Debug');
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        currentUserId = user.uid;
+                        userIdDisplay.textContent = currentUserId;
+                        loadSchedule();
+                    } else {
+                        try {
+                            const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                            if (token) {
+                                await signInWithCustomToken(auth, token);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        } catch (authError) {
+                            console.error("Authentication failed: ", authError);
+                            showMessage('身份驗證失敗，無法載入資料。');
+                        }
+                    }
+                });
+                
+            } catch (e) {
+                console.error("Firebase initialization failed: ", e);
+                showMessage('無法初始化應用程式。請檢查控制台。');
+                scheduleLoading.textContent = '應用程式初始化失敗。';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            setDefaultDate();
+            form.addEventListener('submit', handleBookingSubmit);
+            initializeFirebase();
+        });
+    </script>
+</body>
+</html>
